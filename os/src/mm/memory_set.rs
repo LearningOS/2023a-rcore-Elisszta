@@ -63,6 +63,13 @@ impl MemorySet {
             None,
         );
     }
+    /// Unmap destinated virtual page numbers
+    pub fn unmap_vpn(&mut self, vpn: VirtPageNum){
+        for i in 0..(self.areas.len()) {
+            self.areas[i].unmap_one(&mut self.page_table, vpn);
+        }
+    }
+    /// Push a new area into the memory set.
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
@@ -305,7 +312,10 @@ impl MapArea {
     #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
-            self.data_frames.remove(&vpn);
+            let res = self.data_frames.remove(&vpn);
+            if let None = res {
+                return;
+            }
         }
         page_table.unmap(vpn);
     }

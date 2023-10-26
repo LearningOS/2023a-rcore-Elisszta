@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -153,6 +154,21 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn get_current_mem_set(&self) -> &'static mut MemorySet {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let res = &mut inner.tasks[cur].memory_set as *mut MemorySet;
+        unsafe{&mut *res}
+    }
+
+    /// Get the current 'Running' task's control block
+    fn fetch_curr_task_control_block(&self) -> &'static mut TaskControlBlock{
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let res = &mut inner.tasks[current] as *mut TaskControlBlock;
+        unsafe{&mut *res}
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +217,14 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// get the current task's memory set
+pub fn get_current_mem_set() -> &'static mut MemorySet {
+    TASK_MANAGER.get_current_mem_set()
+}
+
+/// get the current task's control block
+pub fn fetch_curr_task_control_block() -> &'static mut TaskControlBlock{
+    TASK_MANAGER.fetch_curr_task_control_block()
 }

@@ -171,3 +171,21 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+
+/// Translate&Copy a ptr[T] array with LENGTH len to a mutable T Vec through page table
+pub fn write_byte_buffer<T>(ans: T, target: *mut T){
+    let t_size = core::mem::size_of::<T>();
+    let ans_slice = unsafe{
+        core::slice::from_raw_parts(&ans as *const T as *const u8, t_size)
+    };
+    let aims = translated_byte_buffer(crate::task::current_user_token(),
+        target as *const u8, t_size);
+    
+    let mut index: usize = 0;
+    for _sub in aims{
+        for aim_byte in _sub{
+            *aim_byte = ans_slice[index];
+            index += 1;
+        }
+    }
+}
