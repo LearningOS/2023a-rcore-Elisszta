@@ -72,6 +72,12 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
+    /// Delete a vpn
+    pub fn unmap_vpn(&mut self, vpn: VirtPageNum){
+        for i in 0..(self.areas.len()) {
+            self.areas[i].unmap_one(&mut self.page_table, vpn);
+        }
+    }
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
@@ -350,7 +356,11 @@ impl MapArea {
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
-            self.data_frames.remove(&vpn);
+            //Add check, when map doesn't belong to slef, do nothing
+            let res = self.data_frames.remove(&vpn);
+            if let None = res {
+                return;
+            }
         }
         page_table.unmap(vpn);
     }

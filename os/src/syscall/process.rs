@@ -4,11 +4,11 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, write_byte_buffer, VirtAddr, VirtPageNum, MapPermission},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, TaskStatus,
-    },
+    }, timer::get_time_us,
 };
 
 #[repr(C)]
@@ -119,10 +119,17 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().pid.0
     );
-    -1
+
+    let us = get_time_us();
+    let ans = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    write_byte_buffer::<TimeVal>(ans, _ts);
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -130,28 +137,133 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info",
         current_task().unwrap().pid.0
     );
-    -1
+    
+    let curr_task_cb = current_task();
+    if let None = curr_task_cb{
+        return -1;
+    }
+    let curr_task_cb = curr_task_cb.unwrap();
+    let ans = TaskInfo {
+        status: TaskStatus::Running,
+        syscall_times: (*curr_task_cb).get_task_syscall_times(),
+        time: (*curr_task_cb).get_time_ms_from_create(),
+    };
+    write_byte_buffer::<TaskInfo>(ans, _ti);
+    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().pid.0
     );
-    -1
+    
+    let va_start = VirtAddr::from(_start);
+    let va_end = VirtAddr::from(_start + _len);
+
+    if _len == 0 {
+        return 0;
+    }
+    if !va_start.aligned(){
+        trace!("mmap failed: _start 0x{:08x} not aligned", _start);
+        return -1;
+    }
+    if _port & !0x7 != 0 || _port * 0x7 == 0 {
+        return -1;
+    }
+
+    let start_vpn: VirtPageNum = va_start.floor();
+    let end_vpn: VirtPageNum = va_end.ceil();
+    // println!("DEBUG: mmap vpn [{:?}, {:?})", start_vpn, end_vpn);
+    let vpn_range = usize::from(start_vpn) ..usize::from(end_vpn);
+    
+    let mem_set = (*current_task().unwrap()).get_mem_set();
+
+    for vpn in vpn_range.clone() {
+        if let Some(pte) = mem_set.translate(VirtPageNum::from(vpn)) {
+            if pte.is_valid() {
+                return -1;
+            }
+        }
+    }
+
+
+    let permission = (_port as u8) << 1 | (1 << 4);
+    let permission = MapPermission::from_bits_truncate(permission);
+    // println!("DEBUG: MapPermission: {:08b}", permission);
+
+    mem_set.insert_framed_area(va_start, va_end, permission);
+    
+    for vpn in vpn_range.clone() {
+        match mem_set.translate(VirtPageNum::from(vpn)) {
+            None => {
+                trace!("mmap failed at last");
+                return -1;
+            },
+            Some(pte) => {
+                if !pte.is_valid() {
+                    trace!("mmap failed at last");
+                    return -1;
+                }
+            }
+        }
+    }
+    
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap",
         current_task().unwrap().pid.0
     );
-    -1
+    
+    let va_start = VirtAddr::from(_start);
+    let va_end = VirtAddr::from(_start + _len);
+
+    if _len == 0 {
+        return 0;
+    }
+    if !va_start.aligned(){
+        return -1;
+    }
+
+    let start_vpn: VirtPageNum = va_start.floor();
+    let end_vpn: VirtPageNum = va_end.ceil();
+    let vpn_range = usize::from(start_vpn) ..usize::from(end_vpn);
+    
+    let mem_set = (*current_task().unwrap()).get_mem_set();
+
+    for vpn in vpn_range.clone(){
+        match mem_set.translate(VirtPageNum::from(vpn)) {
+            None => return -1,
+            Some(pte) => {
+                if !pte.is_valid() {
+                    return -1;
+                }
+            }
+        }
+    }
+
+    for vpn in vpn_range.clone() {
+        mem_set.unmap_vpn(VirtPageNum::from(vpn));
+    }
+
+    for vpn in vpn_range.clone() {
+        if let Some(pte) = mem_set.translate(VirtPageNum::from(vpn)) {
+            if pte.is_valid() {
+                trace!("munmap failed at last");
+                return -1;
+            }
+        }
+    }
+
+    0
 }
 
 /// change data segment size
@@ -171,7 +283,24 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+
+    let token = current_user_token();
+    let _path = translated_str(token, _path);
+    if let Some(data) = get_app_data_by_name(_path.as_str()) {
+        let current_task = current_task().unwrap();
+        let new_task = current_task.spawn(data);
+        let new_pid = new_task.pid.0;
+        // modify trap context of new_task, because it returns immediately after switching
+        let trap_cx = new_task.inner_exclusive_access().get_trap_cx();
+        // we do not have to move to next instruction since we have done it before
+        // for child process, fork returns 0
+        trap_cx.x[10] = 0;
+        // add new task to scheduler
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
@@ -180,5 +309,9 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio < 2 {
+        return -1;
+    }
+    current_task().unwrap().set_priority(&_prio);
+    _prio
 }

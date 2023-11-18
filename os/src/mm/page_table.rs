@@ -213,3 +213,21 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .unwrap()
         .get_mut()
 }
+
+/// Write into a buffer
+pub fn write_byte_buffer<T>(ans: T, target: *mut T){
+    let t_size = core::mem::size_of::<T>();
+    let ans_slice = unsafe{
+        core::slice::from_raw_parts(&ans as *const T as *const u8, t_size)
+    };
+    let aims = translated_byte_buffer(crate::task::current_user_token(),
+        target as *const u8, t_size);
+    
+    let mut index: usize = 0;
+    for _sub in aims{
+        for aim_byte in _sub{
+            *aim_byte = ans_slice[index];
+            index += 1;
+        }
+    }
+}
